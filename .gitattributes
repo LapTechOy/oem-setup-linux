@@ -1,0 +1,6 @@
+# Shell scripts always LF
+*.sh text eol=lf
+*.service text eol=lf
+*.policy text eol=lf
+*.desktop text eol=lf
+* text=auto
