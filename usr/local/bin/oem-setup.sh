@@ -12,12 +12,52 @@ if ! command -v zenity &>/dev/null; then
     exit 1
 fi
 
-LOCKFILE="$HOME/.oem-setup.lock"
+LOCKDIR="$HOME/.oem-setup.lock"
 APPLY_SCRIPT="/usr/local/sbin/oem-setup-apply.sh"
+SETUP_COMPLETE=0
 
-# Estä useampi ajo
-if [ -f "$LOCKFILE" ]; then
+cleanup_lock() {
+    if [ "$SETUP_COMPLETE" -eq 0 ]; then
+        rm -rf "$LOCKDIR"
+    fi
+}
+
+acquire_lock() {
+    if mkdir "$LOCKDIR" 2>/dev/null; then
+        echo "$$" > "$LOCKDIR/pid"
+        trap cleanup_lock EXIT
+        trap 'cleanup_lock; exit 130' HUP INT TERM
+        return 0
+    fi
+
+    if [ -r "$LOCKDIR/pid" ]; then
+        local old_pid
+        old_pid="$(cat "$LOCKDIR/pid" 2>/dev/null || true)"
+        if [[ "$old_pid" =~ ^[0-9]+$ ]] && kill -0 "$old_pid" 2>/dev/null; then
+            exit 0
+        fi
+    fi
+
+    rm -rf "$LOCKDIR"
+    if mkdir "$LOCKDIR" 2>/dev/null; then
+        echo "$$" > "$LOCKDIR/pid"
+        trap cleanup_lock EXIT
+        trap 'cleanup_lock; exit 130' HUP INT TERM
+        return 0
+    fi
+
     exit 0
+}
+
+# Estä useampi ajo, mutta älä jätä rikkinäistä lockia pysyvästi.
+acquire_lock
+
+if [ ! -x "$APPLY_SCRIPT" ]; then
+    zenity --error \
+        --title="Virhe" \
+        --text="\nKäyttöönoton järjestelmäkomponentti puuttuu.\n\nOta yhteys laitteen valmistelijaan." \
+        --width=500
+    exit 1
 fi
 
 # Odota työpöytää
@@ -86,8 +126,8 @@ confirm_exit() {
     zenity --question \
         --title="Keskeytä käyttöönotto?" \
         --text="\nTietokoneen käyttöönotto on kesken.\n\nJos suljet nyt, käyttöönotto käynnistyy\nuudelleen seuraavalla käynnistyskerralla.\n\nHaluatko keskeyttää?" \
-        --ok-label="Jatka käyttöönottoa" \
-        --cancel-label="Keskeytä" \
+        --ok-label="Keskeytä" \
+        --cancel-label="Jatka käyttöönottoa" \
         --width=$W
     return $?
 }
@@ -99,19 +139,19 @@ while true; do
         --text="\nTämä tietokone on esiasennettu, mutta sitä ei ole vielä\notettu käyttöön.\n\nSeuraavissa vaiheissa:\n\n  1.  Luot itsellesi käyttäjätilin\n  2.  Valitset järjestelmän kielen\n  3.  Asetat salasanan\n\nSen jälkeen tietokone käynnistyy uudelleen\nja on valmis käytettäväksi." \
         --ok-label="Aloita käyttöönotto" \
         --width=$W --height=$H && break
-    confirm_exit || exit 0
+    confirm_exit && exit 0
 done
 
 #   Käyttäjänimi 
 while true; do
     USERNAME=$(zenity --entry \
         --title="Vaihe 1/3 — Käyttäjätili" \
-        --text="\nAnna itsellesi käyttäjänimi.\n\nTämä on tilisi tunnus, jolla kirjaudut sisään.\nEsimerkiksi etunimesi pienillä kirjaimilla: <i>matti</i>" \
+        --text='\nAnna itsellesi käyttäjänimi.\n\nTämä on tilisi tunnus, jolla kirjaudut sisään.\nEsimerkiksi etunimesi pienillä kirjaimilla, esim. matti' \
         --entry-text="" \
         --width=$W --height=$H)
 
     if [ $? -ne 0 ]; then
-        confirm_exit || exit 0
+        confirm_exit && exit 0
         continue
     fi
 
@@ -120,7 +160,7 @@ while true; do
         continue
     fi
 
-    if [[ ! "$USERNAME" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+    if [[ ! "$USERNAME" =~ ^[a-z][a-z0-9_-]{0,31}$ ]]; then
         zenity --warning \
             --text="Virheellinen käyttäjänimi.\n\nKäytä vain pieniä kirjaimia (a-z), numeroita (0-9),\nviivaa (-) tai alaviivaa (_).\nEnsimmäisen merkin on oltava kirjain." \
             --width=$W
@@ -143,7 +183,7 @@ while true; do
         en_US.UTF-8 "English (US)")
 
     if [ $? -ne 0 ]; then
-        confirm_exit || exit 0
+        confirm_exit && exit 0
         continue
     fi
 
@@ -159,7 +199,7 @@ while true; do
         --width=$W)
 
     if [ $? -ne 0 ]; then
-        confirm_exit || exit 0
+        confirm_exit && exit 0
         continue
     fi
 
@@ -173,7 +213,7 @@ while true; do
         --width=$W)
 
     if [ $? -ne 0 ]; then
-        confirm_exit || exit 0
+        confirm_exit && exit 0
         continue
     fi
 
@@ -193,26 +233,39 @@ while true; do
         --ok-label="Ota käyttöön" \
         --cancel-label="Peruuta" \
         --width=$W --height=$H && break
-    confirm_exit || exit 0
+    confirm_exit && exit 0
 done
-
-#  Merkitse käynnistetyksi 
-touch "$LOCKFILE"
 
 # --- Aja root-toiminnot sudolla ---
 # pkexec ei välitä stdiniä, joten käytetään sudoa (jätetty pkexec, jos joskus tarvitsee....)
-printf '%s\n' "$PASSWORD" | sudo "$APPLY_SCRIPT" "$USERNAME" "$LANGSEL"
-RESULT=$?
+RESULT_FILE="$(mktemp)"
+(
+    printf '%s\n' "$PASSWORD" | sudo -n "$APPLY_SCRIPT" "$USERNAME" "$LANGSEL"
+    echo $? > "$RESULT_FILE"
+) | zenity --progress \
+    --title="Viimeistellään käyttöönottoa" \
+    --text="\nLuodaan käyttäjätiliä ja viimeistellään asetuksia..." \
+    --pulsate \
+    --no-cancel \
+    --auto-close \
+    --width=$W
+if [ -s "$RESULT_FILE" ]; then
+    RESULT="$(cat "$RESULT_FILE")"
+else
+    RESULT=1
+fi
+rm -f "$RESULT_FILE"
 unset PASSWORD PASSWORD2
 
 if [ $RESULT -ne 0 ]; then
-    rm -f "$LOCKFILE"
     zenity --error \
         --title="Virhe" \
-        --text="\nKäyttöönotossa tapahtui virhe (koodi: $RESULT).\n\nVoit yrittää uudelleen käynnistämällä\ntietokoneen uudelleen." \
+        --text="\nKäyttöönotossa tapahtui virhe (koodi: $RESULT).\n\nVoit yrittää uudelleen käynnistämällä\nkäyttöönoton uudelleen tai käynnistämällä\ntietokoneen uudelleen." \
         --width=$W --height=$H
     exit 1
 fi
+
+SETUP_COMPLETE=1
 
 zenity --info \
     --title="Käyttöönotto valmis" \

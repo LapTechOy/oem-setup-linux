@@ -1,3 +1,0 @@
-# Sallii oem-setup-apply.sh:n ajon sudolla ilman salasanaa
-# Poistetaan automaattisesti oem-cleanup.sh:n toimesta
-setup ALL=(root) NOPASSWD: /usr/local/sbin/oem-setup-apply.sh

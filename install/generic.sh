@@ -56,6 +56,173 @@ if [ -n "$MISSING" ]; then
     exit 1
 fi
 
+OEM_CONFIG="/etc/default/oem-setup"
+if [ -z "${SETUP_USER+x}" ] && [ -r "$OEM_CONFIG" ]; then
+    # shellcheck disable=SC1090
+    . "$OEM_CONFIG"
+fi
+SETUP_USER="${SETUP_USER:-setup}"
+SETUP_HOME="/home/$SETUP_USER"
+RUNNING_AS_SETUP=0
+
+if [[ ! "$SETUP_USER" =~ ^[a-z][a-z0-9_-]{0,31}$ ]]; then
+    echo "Virhe: virheellinen väliaikainen käyttäjänimi: $SETUP_USER" >&2
+    exit 1
+fi
+
+if [ "${SUDO_USER:-}" = "$SETUP_USER" ] || [ "${USER:-}" = "$SETUP_USER" ]; then
+    RUNNING_AS_SETUP=1
+fi
+
+cleanup_setup_user() {
+    if [ "$RUNNING_AS_SETUP" -eq 1 ]; then
+        echo "[*] Ajetaan $SETUP_USER-käyttäjän sessiosta, ei tapeta nykyistä sessiota."
+        return 0
+    fi
+    pkill -u "$SETUP_USER" 2>/dev/null || true
+    loginctl terminate-user "$SETUP_USER" 2>/dev/null || true
+    sleep 1
+    userdel -r "$SETUP_USER" 2>/dev/null || true
+    groupdel "$SETUP_USER" 2>/dev/null || true
+    rm -rf "$SETUP_HOME"
+}
+
+install_oem_config() {
+    cat > "$OEM_CONFIG" << EOF
+SETUP_USER="$SETUP_USER"
+EOF
+    chmod 644 "$OEM_CONFIG"
+}
+
+install_oem_sudoers() {
+    cat > /etc/sudoers.d/oem-setup << EOF
+# Sallii oem-setup-apply.sh:n ajon sudolla ilman salasanaa
+# Poistetaan automaattisesti oem-cleanup.sh:n toimesta
+$SETUP_USER ALL=(root) NOPASSWD: /usr/local/sbin/oem-setup-apply.sh
+EOF
+    chmod 440 /etc/sudoers.d/oem-setup
+}
+
+prepare_setup_user() {
+    passwd -d "$SETUP_USER" 2>/dev/null || true
+    usermod -s /bin/bash "$SETUP_USER" 2>/dev/null || true
+    chage -E -1 "$SETUP_USER" 2>/dev/null || true
+}
+
+detect_display_manager() {
+    local dm=""
+    if [ -e /etc/systemd/system/display-manager.service ]; then
+        dm="$(basename "$(readlink -f /etc/systemd/system/display-manager.service)" .service)"
+    fi
+
+    case "$dm" in
+        lightdm|gdm|gdm3|sddm) echo "$dm"; return 0 ;;
+    esac
+
+    if [ -d /etc/lightdm ] || [ -f /etc/lightdm/lightdm.conf ]; then
+        echo "lightdm"
+    elif [ -d /etc/gdm3 ] || [ -d /etc/gdm ]; then
+        echo "gdm"
+    elif command -v sddm &>/dev/null; then
+        echo "sddm"
+    fi
+}
+
+detect_sddm_session() {
+    local session_file session_name preferred
+    for preferred in ubuntu ubuntu-xorg gnome plasma plasmawayland kde-plasma xfce cinnamon mate; do
+        for session_file in \
+            "/usr/share/xsessions/${preferred}.desktop" \
+            "/usr/share/wayland-sessions/${preferred}.desktop"; do
+            if [ -f "$session_file" ]; then
+                basename "$session_file" .desktop
+                return 0
+            fi
+        done
+    done
+
+    session_name=$(
+        { ls -1 /usr/share/xsessions/*.desktop 2>/dev/null; ls -1 /usr/share/wayland-sessions/*.desktop 2>/dev/null; } \
+        | sort \
+        | sed -n '1p' \
+        | xargs -r -n1 basename \
+        | sed 's/\.desktop$//'
+    )
+    if [ -n "$session_name" ]; then
+        echo "$session_name"
+    fi
+}
+
+configure_lightdm_autologin() {
+    if [ -f /etc/lightdm/lightdm.conf ]; then
+        sed -i "/autologin-user=$SETUP_USER/d" /etc/lightdm/lightdm.conf 2>/dev/null || true
+        sed -i '/autologin-user-timeout=0/d' /etc/lightdm/lightdm.conf 2>/dev/null || true
+    fi
+    mkdir -p /etc/lightdm/lightdm.conf.d
+    cat > /etc/lightdm/lightdm.conf.d/50-oem-autologin.conf << LIGHTDMEOF
+[Seat:*]
+autologin-user=$SETUP_USER
+autologin-user-timeout=0
+LIGHTDMEOF
+}
+
+configure_gdm_autologin() {
+    GDM_CONF="/etc/gdm3/custom.conf"
+    [ -d /etc/gdm ] && [ ! -d /etc/gdm3 ] && GDM_CONF="/etc/gdm/custom.conf"
+    GDM_SESSION="$(detect_sddm_session)"
+    if [ ! -f "$GDM_CONF" ]; then
+        mkdir -p "$(dirname "$GDM_CONF")"
+        cat > "$GDM_CONF" << GDMEOF
+[daemon]
+AutomaticLoginEnable=True
+AutomaticLogin=$SETUP_USER
+GDMEOF
+    elif ! grep -q '^\[daemon\]' "$GDM_CONF"; then
+        cat >> "$GDM_CONF" << GDMEOF
+
+[daemon]
+AutomaticLoginEnable=True
+AutomaticLogin=$SETUP_USER
+GDMEOF
+    else
+        sed -i "/^\[daemon\]/,/^\[/ {
+            s/^#\?AutomaticLoginEnable=.*/AutomaticLoginEnable=True/
+            s/^#\?AutomaticLogin=.*/AutomaticLogin=$SETUP_USER/
+        }" "$GDM_CONF"
+        # Jos avaimia ei ollut lainkaan, lisää ne [daemon]-osion alle
+        if ! sed -n '/^\[daemon\]/,/^\[/{/^[^#]*AutomaticLoginEnable=/p}' "$GDM_CONF" | grep -q .; then
+            sed -i '/^\[daemon\]/a AutomaticLoginEnable=True' "$GDM_CONF"
+        fi
+        if ! sed -n '/^\[daemon\]/,/^\[/{/^[^#]*AutomaticLogin=/p}' "$GDM_CONF" | grep -q .; then
+            sed -i "/^\[daemon\]/a AutomaticLogin=$SETUP_USER" "$GDM_CONF"
+        fi
+    fi
+
+    if [ -n "$GDM_SESSION" ]; then
+        mkdir -p /var/lib/AccountsService/users
+        cat > "/var/lib/AccountsService/users/$SETUP_USER" << EOF
+[User]
+Session=$GDM_SESSION
+XSession=$GDM_SESSION
+SystemAccount=false
+EOF
+        chmod 600 "/var/lib/AccountsService/users/$SETUP_USER"
+    fi
+}
+
+configure_sddm_autologin() {
+    mkdir -p /etc/sddm.conf.d
+    SDDM_SESSION="$(detect_sddm_session)"
+
+    cat > /etc/sddm.conf.d/oem-autologin.conf << SDDMEOF
+[Autologin]
+User=$SETUP_USER
+SDDMEOF
+    if [ -n "$SDDM_SESSION" ]; then
+        echo "Session=$SDDM_SESSION" >> /etc/sddm.conf.d/oem-autologin.conf
+    fi
+}
+
 echo "============================================"
 echo "  OEM Setup — ensikäyttöönoton asennus"
 echo "============================================"
@@ -79,92 +246,47 @@ install -m 644 etc/polkit-1/actions/fi.local.oem-setup.policy \
 # Sudoers sallii setup-käyttäjän ajaa apply-skriptin sudolla
 # ilman salasanaa (setup-tilillä ei ole salasanaa)
 mkdir -p /etc/sudoers.d
-install -m 440 etc/sudoers.d/oem-setup /etc/sudoers.d/
+install_oem_sudoers
 visudo -cf /etc/sudoers.d/oem-setup
 
+mkdir -p /etc/default
+install_oem_config
+
+# Siivoa vanha setup-käyttäjä ennen luontia (jos pitää ajaa uusiksi)
+cleanup_setup_user
+
 # Luo setup-käyttäjä
-if ! id setup &>/dev/null; then
+if ! id "$SETUP_USER" &>/dev/null; then
     if command -v adduser &>/dev/null && adduser --help 2>&1 | grep -q -- "--gecos"; then
-        adduser --gecos "OEM Setup" --disabled-password setup
+        adduser --gecos "OEM Setup" --disabled-password "$SETUP_USER"
     else
-        useradd -m -c "OEM Setup" -s /bin/bash setup
+        useradd -m -c "OEM Setup" -s /bin/bash "$SETUP_USER"
     fi
 fi
+prepare_setup_user
 
 # Autostart
-SETUP_HOME=/home/setup
 mkdir -p "$SETUP_HOME/.config/autostart"
 install -m 644 home/setup/.config/autostart/oem-setup.desktop \
     "$SETUP_HOME/.config/autostart/"
-chown -R setup:setup "$SETUP_HOME/.config"
+chown -R "$SETUP_USER:$SETUP_USER" "$SETUP_HOME/.config"
 
 # Display manager autologin
-if [ -f /etc/lightdm/lightdm.conf ]; then
-    # LightDM
-    sed -i 's/^#\?autologin-user=.*/autologin-user=setup/' /etc/lightdm/lightdm.conf
-    sed -i 's/^#\?autologin-user-timeout=.*/autologin-user-timeout=0/' /etc/lightdm/lightdm.conf
-    if ! grep -q '^autologin-user=' /etc/lightdm/lightdm.conf; then
-        echo "autologin-user=setup" >> /etc/lightdm/lightdm.conf
-    fi
-    if ! grep -q '^autologin-user-timeout=' /etc/lightdm/lightdm.conf; then
-        echo "autologin-user-timeout=0" >> /etc/lightdm/lightdm.conf
-    fi
-elif [ -d /etc/gdm3 ] || [ -d /etc/gdm ]; then
+DISPLAY_MANAGER="$(detect_display_manager)"
+case "$DISPLAY_MANAGER" in
+lightdm)
+    # LightDM — poista mahdollinen vanha autologin pääkonfigista, käytä drop-inia
+    configure_lightdm_autologin
+    ;;
+gdm|gdm3)
     # GDM (gdm3 Debianissa/Ubuntussa, gdm muissa)
-    GDM_CONF="/etc/gdm3/custom.conf"
-    [ -d /etc/gdm ] && [ ! -d /etc/gdm3 ] && GDM_CONF="/etc/gdm/custom.conf"
-    if [ ! -f "$GDM_CONF" ]; then
-        mkdir -p "$(dirname "$GDM_CONF")"
-        cat > "$GDM_CONF" << 'GDMEOF'
-[daemon]
-AutomaticLoginEnable=true
-AutomaticLogin=setup
-GDMEOF
-    elif ! grep -q '^\[daemon\]' "$GDM_CONF"; then
-        cat >> "$GDM_CONF" << 'GDMEOF'
-
-[daemon]
-AutomaticLoginEnable=true
-AutomaticLogin=setup
-GDMEOF
-    else
-        sed -i '/^\[daemon\]/,/^\[/ {
-            s/^#\?AutomaticLoginEnable=.*/AutomaticLoginEnable=true/
-            s/^#\?AutomaticLogin=.*/AutomaticLogin=setup/
-        }' "$GDM_CONF"
-        # Jos avaimia ei ollut lainkaan, lisää ne [daemon]-osion alle
-        if ! sed -n '/^\[daemon\]/,/^\[/{/^[^#]*AutomaticLoginEnable=/p}' "$GDM_CONF" | grep -q .; then
-            sed -i '/^\[daemon\]/a AutomaticLoginEnable=true' "$GDM_CONF"
-        fi
-        if ! sed -n '/^\[daemon\]/,/^\[/{/^[^#]*AutomaticLogin=/p}' "$GDM_CONF" | grep -q .; then
-            sed -i '/^\[daemon\]/a AutomaticLogin=setup' "$GDM_CONF"
-        fi
-    fi
-elif command -v sddm &>/dev/null; then
+    configure_gdm_autologin
+    ;;
+sddm)
     # SDDM
-    mkdir -p /etc/sddm.conf.d
-    SDDM_SESSION=""
-    if [ -d /usr/share/xsessions ] || [ -d /usr/share/wayland-sessions ]; then
-        SESSION_COUNT=$(
-            { ls -1 /usr/share/xsessions/*.desktop 2>/dev/null; ls -1 /usr/share/wayland-sessions/*.desktop 2>/dev/null; } \
-            | wc -l
-        )
-        if [ "$SESSION_COUNT" -eq 1 ]; then
-            SDDM_SESSION=$(
-                { ls -1 /usr/share/xsessions/*.desktop 2>/dev/null; ls -1 /usr/share/wayland-sessions/*.desktop 2>/dev/null; } \
-                | sed -n '1p' | xargs -n1 basename | sed 's/\.desktop$//'
-            )
-        fi
-    fi
-
-    cat > /etc/sddm.conf.d/oem-autologin.conf << SDDMEOF
-[Autologin]
-User=setup
-SDDMEOF
-    if [ -n "$SDDM_SESSION" ]; then
-        echo "Session=$SDDM_SESSION" >> /etc/sddm.conf.d/oem-autologin.conf
-    fi
-fi
+    configure_sddm_autologin
+    ;;
+esac
 
 echo ""
 echo "[OK] Asennus valmis."
