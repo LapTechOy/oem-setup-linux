@@ -52,7 +52,9 @@ acquire_lock() {
 # Estä useampi ajo, mutta älä jätä rikkinäistä lockia pysyvästi.
 acquire_lock
 
-if [ ! -x "$APPLY_SCRIPT" ]; then
+if [ ! -e "$APPLY_SCRIPT" ]; then
+    # Huom: -x ei toimi tässä, koska apply.sh on mode 700 owner root,
+    # eikä setup-käyttäjä voi ajaa sitä suoraan. Sudo elevoi rootiksi.
     zenity --error \
         --title="Virhe" \
         --text="\nKäyttöönoton järjestelmäkomponentti puuttuu.\n\nOta yhteys laitteen valmistelijaan." \

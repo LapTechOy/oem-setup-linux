@@ -67,18 +67,15 @@ if [ "${SUDO_USER:-}" = "$SETUP_USER" ] || [ "${USER:-}" = "$SETUP_USER" ]; then
     RUNNING_AS_SETUP=1
 fi
 
-cleanup_setup_user() {
-    if [ "$RUNNING_AS_SETUP" -eq 1 ]; then
-        echo "[*] Ajetaan $SETUP_USER-käyttäjän sessiosta, ei tapeta nykyistä sessiota."
-        return 0
-    fi
-    pkill -u "$SETUP_USER" 2>/dev/null || true
-    loginctl terminate-user "$SETUP_USER" 2>/dev/null || true
-    sleep 1
-    userdel -r "$SETUP_USER" 2>/dev/null || true
-    groupdel "$SETUP_USER" 2>/dev/null || true
-    rm -rf "$SETUP_HOME"
-}
+# VAROITUS: cleanup_setup_user on POIS KÄYTÖSTÄ.
+# Setup-käyttäjän tuhoamisesta vastaa YKSINOMAAN oem-cleanup.service
+# joka ajetaan vasta kun wizard on luonut oikean käyttäjätilin.
+# install.sh ei saa missään tilanteessa tuhota setup-käyttäjää —
+# se tuhoaisi sessio-/salasanatilan jos developer ajaa skriptin uudelleen.
+#
+# Manuaalinen reset jos tarpeen:
+#     sudo userdel -r setup
+# ennen install.sh:n ajamista.
 
 install_oem_config() {
     cat > "$OEM_CONFIG" << EOF
@@ -188,14 +185,19 @@ visudo -cf /etc/sudoers.d/oem-setup
 mkdir -p /etc/default
 install_oem_config
 
-# Siivoa vanha setup-käyttäjä ennen luontia, jos pitää ajaa uusiks
-cleanup_setup_user
-
-# Luo setup-käyttäjä
+# Setup-käyttäjä: luo VAIN jos ei ole olemassa.
+# ÄLÄ koskaan tuhoa olemassa olevaa setup-käyttäjää install.sh:sta!
 if ! id "$SETUP_USER" &>/dev/null; then
+    echo "[*] Luodaan setup-käyttäjä..."
     useradd -m -c "OEM Setup" -s /bin/bash "$SETUP_USER"
+    prepare_setup_user
+else
+    echo "[*] Setup-käyttäjä on jo olemassa — säilytetään nykyinen tila."
+    CURRENT_SHELL="$(getent passwd "$SETUP_USER" | cut -d: -f7)"
+    if [ "$CURRENT_SHELL" != "/bin/bash" ]; then
+        usermod -s /bin/bash "$SETUP_USER" 2>/dev/null || true
+    fi
 fi
-prepare_setup_user
 
 # Autostart
 mkdir -p "$SETUP_HOME/.config/autostart"

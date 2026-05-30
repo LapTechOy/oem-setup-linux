@@ -74,18 +74,16 @@ if [ "${SUDO_USER:-}" = "$SETUP_USER" ] || [ "${USER:-}" = "$SETUP_USER" ]; then
     RUNNING_AS_SETUP=1
 fi
 
-cleanup_setup_user() {
-    if [ "$RUNNING_AS_SETUP" -eq 1 ]; then
-        echo "[*] Ajetaan $SETUP_USER-käyttäjän sessiosta, ei tapeta nykyistä sessiota."
-        return 0
-    fi
-    pkill -u "$SETUP_USER" 2>/dev/null || true
-    loginctl terminate-user "$SETUP_USER" 2>/dev/null || true
-    sleep 1
-    userdel -r "$SETUP_USER" 2>/dev/null || true
-    groupdel "$SETUP_USER" 2>/dev/null || true
-    rm -rf "$SETUP_HOME"
-}
+# VAROITUS: cleanup_setup_user on POIS KÄYTÖSTÄ.
+# Setup-käyttäjän tuhoamisesta vastaa YKSINOMAAN oem-cleanup.service
+# joka ajetaan vasta kun wizard on luonut oikean käyttäjätilin.
+# install.sh ei saa missään tilanteessa tuhota setup-käyttäjää —
+# se tuhoaisi sessio-/salasanatilan jos developer ajaa skriptin
+# uudelleen kehitysympäristössä.
+#
+# Jos joskus oikeasti tarvitsee resetoida setup-käyttäjä manuaalisesti:
+#     sudo deluser --remove-home setup
+# ennen install.sh:n ajamista.
 
 install_oem_config() {
     cat > "$OEM_CONFIG" << EOF
@@ -252,18 +250,27 @@ visudo -cf /etc/sudoers.d/oem-setup
 mkdir -p /etc/default
 install_oem_config
 
-# Siivoa vanha setup-käyttäjä ennen luontia (jos pitää ajaa uusiksi)
-cleanup_setup_user
-
-# Luo setup-käyttäjä
+# Setup-käyttäjä: luo VAIN jos ei ole olemassa.
+# ÄLÄ koskaan tuhoa olemassa olevaa setup-käyttäjää install.sh:sta!
+# Setup-käyttäjän poisto on YKSINOMAAN oem-cleanup.service:n vastuulla,
+# joka ajetaan vasta kun loppukäyttäjän oikea tili on luotu wizardilla.
 if ! id "$SETUP_USER" &>/dev/null; then
+    echo "[*] Luodaan setup-käyttäjä..."
     if command -v adduser &>/dev/null && adduser --help 2>&1 | grep -q -- "--gecos"; then
         adduser --gecos "OEM Setup" --disabled-password "$SETUP_USER"
     else
         useradd -m -c "OEM Setup" -s /bin/bash "$SETUP_USER"
     fi
+    prepare_setup_user
+else
+    echo "[*] Setup-käyttäjä on jo olemassa — säilytetään nykyinen tila."
+    echo "    (Älä huoli olemassa olevasta salasanasta tai sessiosta.)"
+    # Varmista vain bash-shell (turvallinen, ei tuhoa salasanaa eikä mitään muuta)
+    CURRENT_SHELL="$(getent passwd "$SETUP_USER" | cut -d: -f7)"
+    if [ "$CURRENT_SHELL" != "/bin/bash" ]; then
+        usermod -s /bin/bash "$SETUP_USER" 2>/dev/null || true
+    fi
 fi
-prepare_setup_user
 
 # Autostart
 mkdir -p "$SETUP_HOME/.config/autostart"
