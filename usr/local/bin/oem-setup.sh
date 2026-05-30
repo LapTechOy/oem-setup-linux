@@ -239,8 +239,9 @@ done
 # --- Aja root-toiminnot sudolla ---
 # pkexec ei välitä stdiniä, joten käytetään sudoa (jätetty pkexec, jos joskus tarvitsee....)
 RESULT_FILE="$(mktemp)"
+LOG_FILE="$(mktemp)"
 (
-    printf '%s\n' "$PASSWORD" | sudo -n "$APPLY_SCRIPT" "$USERNAME" "$LANGSEL"
+    printf '%s\n' "$PASSWORD" | sudo -n "$APPLY_SCRIPT" "$USERNAME" "$LANGSEL" 2>"$LOG_FILE"
     echo $? > "$RESULT_FILE"
 ) | zenity --progress \
     --title="Viimeistellään käyttöönottoa" \
@@ -258,12 +259,29 @@ rm -f "$RESULT_FILE"
 unset PASSWORD PASSWORD2
 
 if [ $RESULT -ne 0 ]; then
-    zenity --error \
-        --title="Virhe" \
-        --text="\nKäyttöönotossa tapahtui virhe (koodi: $RESULT).\n\nVoit yrittää uudelleen käynnistämällä\nkäyttöönoton uudelleen tai käynnistämällä\ntietokoneen uudelleen." \
-        --width=$W --height=$H
+    # Kerää viimeiset 5 riviä apply.sh:n virheviesteistä käyttäjälle
+    # Pango-escape: &, <, > -> &amp; &lt; &gt;
+    ERR_DETAIL=""
+    if [ -s "$LOG_FILE" ]; then
+        ERR_DETAIL="$(tail -n 5 "$LOG_FILE" 2>/dev/null \
+            | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g')"
+    fi
+    rm -f "$LOG_FILE"
+
+    if [ -n "$ERR_DETAIL" ]; then
+        zenity --error \
+            --title="Virhe" \
+            --text="\nKäyttöönotossa tapahtui virhe (koodi: $RESULT).\n\n<tt>$ERR_DETAIL</tt>\n\nVoit yrittää uudelleen käynnistämällä tietokoneen uudelleen." \
+            --width=$W --height=$H
+    else
+        zenity --error \
+            --title="Virhe" \
+            --text="\nKäyttöönotossa tapahtui virhe (koodi: $RESULT).\n\nVoit yrittää uudelleen käynnistämällä tietokoneen uudelleen." \
+            --width=$W --height=$H
+    fi
     exit 1
 fi
+rm -f "$LOG_FILE"
 
 SETUP_COMPLETE=1
 
