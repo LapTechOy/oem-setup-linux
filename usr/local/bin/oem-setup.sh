@@ -42,6 +42,16 @@ pango_escape() {
     printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
 }
 
+# Käyttäjälle näytettävä kielinimi (ei locale-koodi)
+locale_display_name() {
+    case "$1" in
+        fi_FI.UTF-8) echo "Suomi" ;;
+        sv_SE.UTF-8) echo "Svenska" ;;
+        en_US.UTF-8) echo "English (US)" ;;
+        *) echo "$1" ;;
+    esac
+}
+
 cleanup_lock() {
     if [ "$SETUP_COMPLETE" -eq 0 ]; then
         rm -rf "$LOCKDIR"
@@ -82,8 +92,8 @@ if [ ! -e "$APPLY_SCRIPT" ]; then
     # Huom: -x ei toimi tässä, koska apply.sh on mode 700 owner root,
     # eikä setup-käyttäjä voi ajaa sitä suoraan. Sudo elevoi rootiksi.
     zenity --error \
-        --title="Virhe" \
-        --text="\nKäyttöönoton järjestelmäkomponentti puuttuu.\n\nOta yhteys laitteen valmistelijaan." \
+        --title="Käyttöönottoa ei voi aloittaa" \
+        --text="\nKäyttöönoton tarvitsema osa puuttuu tietokoneelta.\n\nOta yhteyttä laitteen toimittajaan." \
         --width=500
     exit 1
 fi
@@ -152,10 +162,10 @@ fi
 # 0 = jatka käyttöönottoa, 1 = sulkeminen
 confirm_exit() {
     zenity --question \
-        --title="Keskeytä käyttöönotto?" \
-        --text="\nTietokoneen käyttöönotto on kesken.\n\nJos suljet nyt, käyttöönotto käynnistyy\nuudelleen seuraavalla käynnistyskerralla.\n\nHaluatko keskeyttää?" \
-        --ok-label="Keskeytä" \
-        --cancel-label="Jatka käyttöönottoa" \
+        --title="Lopetetaanko nyt?" \
+        --text="\nKäyttöönotto on vielä kesken.\n\nVoit jatkaa milloin tahansa — käyttöönotto käynnistyy\nuudelleen seuraavalla kerralla kun tietokone\nkäynnistetään." \
+        --ok-label="Lopeta nyt" \
+        --cancel-label="Jatka" \
         --width=$W
     return $?
 }
@@ -163,9 +173,9 @@ confirm_exit() {
 #  Tervetuloviesti / ohjeet
 while true; do
     zenity --info \
-        --title="Tervetuloa — tietokoneen käyttöönotto" \
-        --text="\nTämä tietokone on esiasennettu, mutta sitä ei ole vielä\notettu käyttöön.\n\nSeuraavissa vaiheissa:\n\n  1.  Luot itsellesi käyttäjätilin\n  2.  Valitset järjestelmän kielen\n  3.  Asetat salasanan\n\nSen jälkeen tietokone käynnistyy uudelleen\nja on valmis käytettäväksi." \
-        --ok-label="Aloita käyttöönotto" \
+        --title="Tervetuloa" \
+        --text="\nOtetaan uusi tietokoneesi käyttöön.\n\nTämä kestää noin minuutin. Tarvitsen sinulta vain:\n\n  • Nimesi\n  • Kielen jota haluat käyttää\n  • Salasanan\n\nSen jälkeen tietokone käynnistyy uudelleen\nja on valmis." \
+        --ok-label="Aloitetaan" \
         --width=$W --height=$H && break
     confirm_exit && exit 0
 done
@@ -173,8 +183,8 @@ done
 #   Nimi (näkyvä nimi + johdettu käyttäjänimi)
 while true; do
     DISPLAY_NAME=$(zenity --entry \
-        --title="Vaihe 1/3 — Nimi" \
-        --text='\nAnna nimi tälle käyttäjälle.\n\nVoit antaa koko nimesi (esim. Matti Meikäläinen)\ntai pelkän käyttäjänimen (esim. matti).' \
+        --title="Nimesi (1/3)" \
+        --text='\nMikä on nimesi?\n\nVoit kirjoittaa koko nimesi (esim. Matti Meikäläinen)\ntai vain etunimesi (esim. Matti).' \
         --entry-text="" \
         --width=$W --height=$H)
 
@@ -188,14 +198,14 @@ while true; do
         | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
 
     if [[ -z "$DISPLAY_NAME" ]]; then
-        zenity --warning --text="Nimi ei voi olla tyhjä." --width=$W
+        zenity --warning --text="Kirjoita jokin nimi, kiitos." --width=$W
         continue
     fi
 
     # Kaksoispiste rikkoisi /etc/passwd-formaatin
     if [[ "$DISPLAY_NAME" == *":"* ]]; then
         zenity --warning \
-            --text="Nimessä ei saa olla kaksoispistettä (:)." \
+            --text="Nimessä ei voi olla kaksoispistettä (:).\n\nKokeile toista nimeä." \
             --width=$W
         continue
     fi
@@ -205,7 +215,7 @@ while true; do
 
     if [[ -z "$USERNAME" ]] || [[ ! "$USERNAME" =~ ^[a-z][a-z0-9_-]{0,31}$ ]]; then
         zenity --warning \
-            --text="Nimestä ei voida johtaa käyttäjänimeä.\n\nKäytä nimeä joka alkaa kirjaimella, esim. 'Matti' tai 'matti'." \
+            --text="Tästä nimestä ei voi tehdä käyttäjätunnusta.\n\nKokeile nimeä joka alkaa kirjaimella, esim. \"Matti\"." \
             --width=$W
         continue
     fi
@@ -215,7 +225,7 @@ while true; do
     # aiempi luonti), käyttäjä saa palautteen heti — ei vasta apply-vaiheessa.
     if id "$USERNAME" &>/dev/null; then
         zenity --warning \
-            --text="Käyttäjänimi <b>${USERNAME}</b> on jo varattu järjestelmässä.\n\nKokeile toista nimeä." \
+            --text="Tunnus <b>${USERNAME}</b> on jo käytössä.\n\nKokeile toista nimeä." \
             --width=$W
         continue
     fi
@@ -226,8 +236,8 @@ done
 #  Kieli 
 while true; do
     LANGSEL=$(zenity --list \
-        --title="Vaihe 2/3 — Järjestelmän kieli" \
-        --text="\nValitse kieli, jota käytetään valikoissa ja järjestelmässä:" \
+        --title="Kieli (2/3)" \
+        --text="\nMillä kielellä haluat käyttää tietokonettasi?" \
         --column="Koodi" --column="Kieli" \
         --hide-column=1 \
         --width=$W --height=$H \
@@ -248,7 +258,7 @@ done
 #  Salasana 
 while true; do
     PASSWORD=$(zenity --password \
-        --title="Vaihe 3/3 — Salasana" \
+        --title="Salasana (3/3)" \
         --width=$W)
 
     if [ $? -ne 0 ]; then
@@ -257,12 +267,12 @@ while true; do
     fi
 
     if [[ -z "$PASSWORD" ]]; then
-        zenity --warning --text="Salasana ei voi olla tyhjä." --width=$W
+        zenity --warning --text="Kirjoita jokin salasana, kiitos." --width=$W
         continue
     fi
 
     PASSWORD2=$(zenity --password \
-        --title="Vaihe 3/3 — Vahvista salasana" \
+        --title="Kirjoita salasana uudelleen (3/3)" \
         --width=$W)
 
     if [ $? -ne 0 ]; then
@@ -271,7 +281,9 @@ while true; do
     fi
 
     if [[ "$PASSWORD" != "$PASSWORD2" ]]; then
-        zenity --warning --text="Salasanat eivät täsmää. Yritä uudelleen." --width=$W
+        zenity --warning \
+            --text="Salasanat eivät täsmänneet.\n\nKokeile uudelleen — kirjoita sama salasana molempiin kenttiin." \
+            --width=$W
         continue
     fi
 
@@ -281,11 +293,12 @@ done
 # Vahvistus 
 while true; do
     DISPLAY_NAME_ESC="$(pango_escape "$DISPLAY_NAME")"
+    LANG_DISPLAY="$(pango_escape "$(locale_display_name "$LANGSEL")")"
     zenity --question \
-        --title="Vahvista käyttöönotto" \
-        --text="\nLuodaan käyttäjä:\n\nNäkyvä nimi:  <b>${DISPLAY_NAME_ESC}</b>\nKäyttäjänimi:  <b>${USERNAME}</b>\nKotikansio:  /home/${USERNAME}\nKieli:  <b>${LANGSEL}</b>\n\nTietokone käynnistyy uudelleen käyttöönoton jälkeen." \
-        --ok-label="Ota käyttöön" \
-        --cancel-label="Peruuta" \
+        --title="Onko kaikki oikein?" \
+        --text="\nTarkista tiedot:\n\nNimi:  <b>${DISPLAY_NAME_ESC}</b>\nKäyttäjätunnus:  <b>${USERNAME}</b>\nKotikansio:  <b>/home/${USERNAME}</b>\nKieli:  <b>${LANG_DISPLAY}</b>\n\nKun jatkat, tietokone käynnistyy uudelleen\nja olet valmis kirjautumaan sisään." \
+        --ok-label="Jatka" \
+        --cancel-label="Takaisin" \
         --width=$W --height=$H && break
     confirm_exit && exit 0
 done
@@ -298,8 +311,8 @@ LOG_FILE="$(mktemp)"
     printf '%s\n' "$PASSWORD" | sudo -n "$APPLY_SCRIPT" "$USERNAME" "$LANGSEL" "$DISPLAY_NAME" 2>"$LOG_FILE"
     echo $? > "$RESULT_FILE"
 ) | zenity --progress \
-    --title="Viimeistellään käyttöönottoa" \
-    --text="\nLuodaan käyttäjätiliä ja viimeistellään asetuksia..." \
+    --title="Hetki..." \
+    --text="\nLuodaan käyttäjätunnustasi ja viimeistellään tietokoneesi.\nTämä kestää vain hetken." \
     --pulsate \
     --no-cancel \
     --auto-close \
@@ -324,13 +337,13 @@ if [ $RESULT -ne 0 ]; then
 
     if [ -n "$ERR_DETAIL" ]; then
         zenity --error \
-            --title="Virhe" \
-            --text="\nKäyttöönotossa tapahtui virhe (koodi: $RESULT).\n\n<tt>$ERR_DETAIL</tt>\n\nVoit yrittää uudelleen käynnistämällä tietokoneen uudelleen." \
+            --title="Jokin meni vikaan" \
+            --text="\nKäyttöönotto ei valitettavasti onnistunut.\n\n<tt>$ERR_DETAIL</tt>\n\nKokeile uudelleen käynnistämällä tietokone.\nJos ongelma jatkuu, ota yhteyttä laitteen toimittajaan.\n\n(Virhekoodi: $RESULT)" \
             --width=$W --height=$H
     else
         zenity --error \
-            --title="Virhe" \
-            --text="\nKäyttöönotossa tapahtui virhe (koodi: $RESULT).\n\nVoit yrittää uudelleen käynnistämällä tietokoneen uudelleen." \
+            --title="Jokin meni vikaan" \
+            --text="\nKäyttöönotto ei valitettavasti onnistunut.\n\nKokeile uudelleen käynnistämällä tietokone.\nJos ongelma jatkuu, ota yhteyttä laitteen toimittajaan.\n\n(Virhekoodi: $RESULT)" \
             --width=$W --height=$H
     fi
     exit 1
@@ -340,8 +353,8 @@ rm -f "$LOG_FILE"
 SETUP_COMPLETE=1
 
 zenity --info \
-    --title="Käyttöönotto valmis" \
-    --text="\nTietokone on otettu käyttöön.\n\nKirjaudu seuraavaksi sisään käyttäjänä\n<b>$(pango_escape "$DISPLAY_NAME")</b> (${USERNAME})\nja aiemmin asettamallasi salasanalla.\n\nTietokone käynnistyy nyt uudelleen." \
+    --title="Valmis!" \
+    --text="\nTietokoneesi on nyt valmis.\n\nKun se käynnistyy uudelleen, kirjaudu sisään\nnimellä <b>$(pango_escape "$DISPLAY_NAME")</b>\nja äsken antamallasi salasanalla.\n\nMukavia hetkiä uuden koneen parissa!" \
     --width=$W --height=$H
 
 systemctl reboot
