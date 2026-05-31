@@ -1,13 +1,33 @@
 #!/bin/bash
 # /usr/local/sbin/oem-setup-apply.sh
 # Ajetaan rootina sudon kautta. Saa argumentit oem-setup.sh:lta.
-# Käyttö: oem-setup-apply.sh <username> <locale>
+# Käyttö: oem-setup-apply.sh <username> <locale> [fullname]
 
 set -euo pipefail
 
 USERNAME="$1"
 LOCALE="$2"
+FULLNAME="${3:-}"   # Valinnainen — jos tyhjä, GECOS jää tyhjäksi
 OEM_CONFIG="/etc/default/oem-setup"
+
+# Validoi FULLNAME:
+#  - : rikkoo /etc/passwd-rakenteen
+#  - Unicode-kontrolli/-format-merkit (\p{C}) sisältävät mm.:
+#      * ASCII-kontrollit (newline, tab, \0)
+#      * Bidi-overridet (U+202A..U+202E, U+2066..U+2069) → spoofausriski
+#      * Zero-width-merkit (U+200B..U+200D, U+FEFF) → näkymättömät merkit
+#      * Surrogaatit ja unassigned-koodipisteet
+#  - Line/paragraph separator (\p{Zl}, \p{Zp}) — eivät kuulu nimiin
+if [[ -n "$FULLNAME" ]]; then
+    if [[ "$FULLNAME" == *":"* ]]; then
+        echo "Virheellinen koko nimi: sisältää kaksoispisteen" >&2
+        exit 1
+    fi
+    if printf '%s' "$FULLNAME" | grep -Pq '[\p{C}\p{Zl}\p{Zp}]'; then
+        echo "Virheellinen koko nimi: sisältää näkymättömiä tai kontrollimerkkejä" >&2
+        exit 1
+    fi
+fi
 SETUP_USER="setup"
 CLEANUP_SERVICE="oem-cleanup"
 CREATED_USER=0
@@ -54,10 +74,12 @@ esac
 IFS= read -r PASSWORD
 
 # --- Luo käyttäjä ---
+# FULLNAME menee GECOS-kenttään → näkyy GDM-kirjautumisruudussa,
+# Asetukset → Käyttäjät -näkymässä ja koko järjestelmän käyttäjälistauksissa.
 if command -v adduser &>/dev/null && adduser --help 2>&1 | grep -q -- "--gecos"; then
-    adduser --gecos "" --disabled-password "$USERNAME"
+    adduser --gecos "$FULLNAME" --disabled-password "$USERNAME"
 else
-    useradd -m -c "" -s /bin/bash "$USERNAME"
+    useradd -m -c "$FULLNAME" -s /bin/bash "$USERNAME"
 fi
 CREATED_USER=1
 # printf '%s' (ei %s\n) jotta salasanan loppuun ei lisätä rivinvaihtoa,

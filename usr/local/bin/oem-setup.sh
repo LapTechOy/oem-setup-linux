@@ -16,6 +16,32 @@ LOCKDIR="$HOME/.oem-setup.lock"
 APPLY_SCRIPT="/usr/local/sbin/oem-setup-apply.sh"
 SETUP_COMPLETE=0
 
+# Johda käyttäjänimi käyttäjän antamasta näkyvästä nimestä:
+#  - Ottaa ensimmäisen sanan (välilyöntiin asti)
+#  - Translitteroi ASCII:ksi (Ääkä -> Aaka, René -> Rene)
+#  - Pieneksi
+#  - Strippaa pois kaikki paitsi a-z, 0-9, - ja _
+# Esim:
+#  "Matti Meikäläinen" -> "matti"
+#  "Pekka Tähtinen"    -> "pekka"
+#  "tv"                -> "tv"
+#  "Ääkä Ölö"          -> "aaka"
+derive_username() {
+    local input="$1"
+    local first_word="${input%% *}"
+    local ascii
+    ascii=$(printf '%s' "$first_word" \
+        | iconv -f UTF-8 -t ASCII//TRANSLIT 2>/dev/null \
+        | tr -d "\"'\`")
+    printf '%s' "$ascii" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-'
+}
+
+# Pango-escape: zenityn --text tukee markupia, joten käyttäjän
+# antama merkkijono pitää escapeta ennen kuin se upotetaan markup-kontekstiin.
+pango_escape() {
+    printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
 cleanup_lock() {
     if [ "$SETUP_COMPLETE" -eq 0 ]; then
         rm -rf "$LOCKDIR"
@@ -144,11 +170,11 @@ while true; do
     confirm_exit && exit 0
 done
 
-#   Käyttäjänimi 
+#   Nimi (näkyvä nimi + johdettu käyttäjänimi)
 while true; do
-    USERNAME=$(zenity --entry \
-        --title="Vaihe 1/3 — Käyttäjätili" \
-        --text='\nAnna itsellesi käyttäjänimi.\n\nTämä on tilisi tunnus, jolla kirjaudut sisään.\nEsimerkiksi etunimesi pienillä kirjaimilla, esim. matti' \
+    DISPLAY_NAME=$(zenity --entry \
+        --title="Vaihe 1/3 — Nimi" \
+        --text='\nAnna nimi tälle käyttäjälle.\n\nVoit antaa koko nimesi (esim. Matti Meikäläinen)\ntai pelkän käyttäjänimen (esim. matti).' \
         --entry-text="" \
         --width=$W --height=$H)
 
@@ -157,14 +183,39 @@ while true; do
         continue
     fi
 
-    if [[ -z "$USERNAME" ]]; then
-        zenity --warning --text="Käyttäjänimi ei voi olla tyhjä." --width=$W
+    # Trimmaa whitespace alusta ja lopusta
+    DISPLAY_NAME="$(printf '%s' "$DISPLAY_NAME" \
+        | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+
+    if [[ -z "$DISPLAY_NAME" ]]; then
+        zenity --warning --text="Nimi ei voi olla tyhjä." --width=$W
         continue
     fi
 
-    if [[ ! "$USERNAME" =~ ^[a-z][a-z0-9_-]{0,31}$ ]]; then
+    # Kaksoispiste rikkoisi /etc/passwd-formaatin
+    if [[ "$DISPLAY_NAME" == *":"* ]]; then
         zenity --warning \
-            --text="Virheellinen käyttäjänimi.\n\nKäytä vain pieniä kirjaimia (a-z), numeroita (0-9),\nviivaa (-) tai alaviivaa (_).\nEnsimmäisen merkin on oltava kirjain." \
+            --text="Nimessä ei saa olla kaksoispistettä (:)." \
+            --width=$W
+        continue
+    fi
+
+    # Johda käyttäjänimi
+    USERNAME="$(derive_username "$DISPLAY_NAME")"
+
+    if [[ -z "$USERNAME" ]] || [[ ! "$USERNAME" =~ ^[a-z][a-z0-9_-]{0,31}$ ]]; then
+        zenity --warning \
+            --text="Nimestä ei voida johtaa käyttäjänimeä.\n\nKäytä nimeä joka alkaa kirjaimella, esim. 'Matti' tai 'matti'." \
+            --width=$W
+        continue
+    fi
+
+    # Aikainen collision-tarkistus: jos käyttäjänimi on jo varattu
+    # (esim. järjestelmäkäyttäjä 'root', 'daemon', 'bin', 'nobody', tai
+    # aiempi luonti), käyttäjä saa palautteen heti — ei vasta apply-vaiheessa.
+    if id "$USERNAME" &>/dev/null; then
+        zenity --warning \
+            --text="Käyttäjänimi <b>${USERNAME}</b> on jo varattu järjestelmässä.\n\nKokeile toista nimeä." \
             --width=$W
         continue
     fi
@@ -229,9 +280,10 @@ done
 
 # Vahvistus 
 while true; do
+    DISPLAY_NAME_ESC="$(pango_escape "$DISPLAY_NAME")"
     zenity --question \
         --title="Vahvista käyttöönotto" \
-        --text="\nTarkista tiedot:\n\nKäyttäjätunnus:  <b>${USERNAME}</b>\nKieli:  <b>${LANGSEL}</b>\n\nTietokone käynnistyy uudelleen käyttöönoton jälkeen." \
+        --text="\nLuodaan käyttäjä:\n\nNäkyvä nimi:  <b>${DISPLAY_NAME_ESC}</b>\nKäyttäjänimi:  <b>${USERNAME}</b>\nKotikansio:  /home/${USERNAME}\nKieli:  <b>${LANGSEL}</b>\n\nTietokone käynnistyy uudelleen käyttöönoton jälkeen." \
         --ok-label="Ota käyttöön" \
         --cancel-label="Peruuta" \
         --width=$W --height=$H && break
@@ -243,7 +295,7 @@ done
 RESULT_FILE="$(mktemp)"
 LOG_FILE="$(mktemp)"
 (
-    printf '%s\n' "$PASSWORD" | sudo -n "$APPLY_SCRIPT" "$USERNAME" "$LANGSEL" 2>"$LOG_FILE"
+    printf '%s\n' "$PASSWORD" | sudo -n "$APPLY_SCRIPT" "$USERNAME" "$LANGSEL" "$DISPLAY_NAME" 2>"$LOG_FILE"
     echo $? > "$RESULT_FILE"
 ) | zenity --progress \
     --title="Viimeistellään käyttöönottoa" \
@@ -289,7 +341,7 @@ SETUP_COMPLETE=1
 
 zenity --info \
     --title="Käyttöönotto valmis" \
-    --text="\nTietokone on otettu käyttöön.\n\nKirjaudu seuraavaksi sisään tunnuksella\n<b>${USERNAME}</b>\nja aiemmin asettamallasi salasanalla.\n\nTietokone käynnistyy nyt uudelleen." \
+    --text="\nTietokone on otettu käyttöön.\n\nKirjaudu seuraavaksi sisään käyttäjänä\n<b>$(pango_escape "$DISPLAY_NAME")</b> (${USERNAME})\nja aiemmin asettamallasi salasanalla.\n\nTietokone käynnistyy nyt uudelleen." \
     --width=$W --height=$H
 
 systemctl reboot
