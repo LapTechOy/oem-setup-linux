@@ -66,7 +66,7 @@ if id "$USERNAME" &>/dev/null; then
     exit 1
 fi
 case "$LOCALE" in
-    fi_FI.UTF-8|sv_SE.UTF-8|en_US.UTF-8) ;;
+    fi_FI.UTF-8|sv_SE.UTF-8|en_GB.UTF-8|en_US.UTF-8) ;;
     *) echo "Virheellinen locale: $LOCALE" >&2; exit 1 ;;
 esac
 

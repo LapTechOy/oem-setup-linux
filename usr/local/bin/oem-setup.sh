@@ -47,6 +47,7 @@ locale_display_name() {
     case "$1" in
         fi_FI.UTF-8) echo "Suomi" ;;
         sv_SE.UTF-8) echo "Svenska" ;;
+        en_GB.UTF-8) echo "English (UK)" ;;
         en_US.UTF-8) echo "English (US)" ;;
         *) echo "$1" ;;
     esac
@@ -243,6 +244,7 @@ while true; do
         --width=$W --height=$H \
         fi_FI.UTF-8 "Suomi" \
         sv_SE.UTF-8 "Svenska" \
+        en_GB.UTF-8 "English (UK)" \
         en_US.UTF-8 "English (US)")
 
     if [ $? -ne 0 ]; then
