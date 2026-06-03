@@ -1,0 +1,12 @@
+[Unit]
+Description=OEM setup cleanup
+After=local-fs.target
+Before=graphical.target display-manager.service gdm.service gdm3.service lightdm.service sddm.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/oem-setup/oem-cleanup.sh
+RemainAfterExit=no
+
+[Install]
+WantedBy=multi-user.target

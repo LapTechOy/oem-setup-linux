@@ -1,0 +1,8 @@
+ConfirmPage 1.0 ConfirmPage.qml
+DonePage 1.0 DonePage.qml
+ErrorPage 1.0 ErrorPage.qml
+LanguagePage 1.0 LanguagePage.qml
+NamePage 1.0 NamePage.qml
+PasswordPage 1.0 PasswordPage.qml
+ProgressPage 1.0 ProgressPage.qml
+WelcomePage 1.0 WelcomePage.qml

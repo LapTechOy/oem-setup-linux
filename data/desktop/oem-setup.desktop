@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=OEM Setup
+Exec=oem-setup-gui
+Icon=oem-setup
+Categories=System;
+Comment=First-boot OEM setup wizard

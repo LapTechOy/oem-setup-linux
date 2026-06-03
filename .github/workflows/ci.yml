@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            qt6-base-dev qt6-declarative-dev qt6-svg-dev \
+            qt6-tools-dev qt6-tools-dev-tools \
+            cmake ninja-build pkg-config \
+            qml6-module-qtquick \
+            qml6-module-qtquick-controls \
+            qml6-module-qtquick-layouts \
+            qml6-module-qtquick-templates \
+            qml6-module-qtquick-window \
+            qml6-module-qtqml-workerscript
+
+      - name: Check scripts and whitespace
+        run: |
+          bash -n data/scripts/oem-apply.sh
+          bash -n data/scripts/oem-cleanup.sh
+          ! git grep -nI '[[:blank:]]$' -- . ':!*.svg' ':!translations/*.ts'
+
+      - name: Build
+        run: |
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure

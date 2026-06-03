@@ -1,0 +1,140 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            qt6-base-dev qt6-declarative-dev qt6-svg-dev \
+            qt6-tools-dev qt6-tools-dev-tools \
+            cmake ninja-build pkg-config \
+            libgl1-mesa-dev libopengl0 libglib2.0-dev xvfb \
+            qml6-module-qtquick \
+            qml6-module-qtquick-controls \
+            qml6-module-qtquick-layouts \
+            qml6-module-qtquick-templates \
+            qml6-module-qtquick-window \
+            qml6-module-qtqml-workerscript
+
+      - name: Build and install to AppDir
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX=/usr
+          cmake --build build --parallel
+          DESTDIR=AppDir cmake --install build
+
+          # QML-moduuli pitää kopioida itse, muuten ohjelma ei löydä sitä ajossa.
+          # Poistetaan prefer-rivi, niin Qt käyttää tiedostokopiota.
+          mkdir -p AppDir/usr/qml/OemSetup
+          grep -v '^prefer ' build/src/gui/OemSetup/qmldir \
+            > AppDir/usr/qml/OemSetup/qmldir
+          cp -r build/src/gui/OemSetup/qml AppDir/usr/qml/OemSetup/
+          find build/src/gui -name "liboem-setup-guiplugin.so" \
+            -exec cp {} AppDir/usr/qml/OemSetup/ \; 2>/dev/null || true
+
+          # Pakotetaan libOpenGL mukaan. Pieni Ubuntu-asennus ei aina tarjoa sitä.
+          mkdir -p AppDir/usr/lib
+          find /usr/lib -name "libOpenGL.so*" -exec cp -Pv {} AppDir/usr/lib/ \;
+
+      - name: Download linuxdeploy
+        run: |
+          curl -fsSLo linuxdeploy \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          curl -fsSLo linuxdeploy-plugin-qt \
+            https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy linuxdeploy-plugin-qt
+
+      - name: Build AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          QMAKE: /usr/bin/qmake6
+          QML_SOURCES_PATHS: ${{ github.workspace }}/src/gui/qml
+          OUTPUT: oem-setup-linux-${{ github.ref_name }}-x86_64.AppImage
+        run: |
+          ./linuxdeploy --appimage-extract-and-run \
+            --appdir AppDir \
+            --plugin qt \
+            --output appimage
+
+      - name: Smoke-test AppImage
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+          LIBGL_ALWAYS_SOFTWARE: "1"
+        run: |
+          app="oem-setup-linux-${{ github.ref_name }}-x86_64.AppImage"
+          chmod +x "$app"
+          set +e
+          xvfb-run -a timeout 5 ./"$app" --mock
+          rc=$?
+          set -e
+          if [[ "$rc" != 0 && "$rc" != 124 ]]; then
+            echo "AppImage mock smoke test failed with exit code $rc" >&2
+            exit "$rc"
+          fi
+
+      - name: Verify AppImage contents
+        run: |
+          app="oem-setup-linux-${{ github.ref_name }}-x86_64.AppImage"
+          rm -rf squashfs-root
+          ./"$app" --appimage-extract >/dev/null
+
+          test -x squashfs-root/usr/bin/oem-setup-gui
+          test -f squashfs-root/usr/qml/OemSetup/qmldir
+          test -x squashfs-root/usr/libexec/oem-setup/oem-apply.sh
+          test -x squashfs-root/usr/libexec/oem-setup/oem-cleanup.sh
+          test -f squashfs-root/usr/share/polkit-1/actions/fi.local.oem-setup.policy
+          test -f squashfs-root/usr/lib/systemd/system/oem-cleanup.service
+          test -e squashfs-root/usr/lib/libOpenGL.so.0 || \
+            test -e squashfs-root/usr/lib/libOpenGL.so.0.0.0
+
+      - name: Write job summary
+        run: |
+          app="oem-setup-linux-${{ github.ref_name }}-x86_64.AppImage"
+          size="$(du -h "$app" | cut -f1)"
+          sha="$(sha256sum "$app" | cut -d' ' -f1)"
+
+          {
+            echo "## AppImage"
+            echo
+            echo "- Tiedosto: \`$app\`"
+            echo "- Koko: \`$size\`"
+            echo "- SHA256: \`$sha\`"
+            echo
+            echo "## Tarkistukset"
+            echo
+            echo "- Mock-savutesti: ok"
+            echo "- QML-moduuli: ok"
+            echo "- Helper-skriptit: ok"
+            echo "- Polkit-policy: ok"
+            echo "- Cleanup-service: ok"
+            echo "- libOpenGL: ok"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: oem-setup-linux-${{ github.ref_name }}-x86_64.AppImage
+          generate_release_notes: true
+          body: |
+            ## Asennus
+
+            ```bash
+            chmod +x oem-setup-linux-${{ github.ref_name }}-x86_64.AppImage
+            sudo ./oem-setup-linux-${{ github.ref_name }}-x86_64.AppImage --install --setup-user=setup
+            ```
+
+            `--setup-user` on sen väliaikaisen käyttäjän nimi jolle autologin on konfiguroitu (oletus: `setup`).
