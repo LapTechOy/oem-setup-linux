@@ -48,6 +48,15 @@ sudo ./build/src/gui/oem-setup-gui --install setup
 
 Sen jälkeen ota image ja levitä. Tai käynnistä suoraan uudelleen.
 
+## Release
+
+Release syntyy `v*`-tagista GitHub Actionsissa.
+
+```bash
+git tag -a v1.0.0 -m "v1.0.0"
+git push origin v1.0.0
+```
+
 ## Tuetut distrot
 
 Ubuntu, Fedora, Arch-pohjaiset. Kielipaketti kannattaa asentaa etukäteen jos haluaa lokalisoidut XDG-kansiot (Lataukset jne.). Wizard asettaa localen mutta ei asenna kielipaketteja.
